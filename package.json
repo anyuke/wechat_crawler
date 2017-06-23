@@ -20,5 +20,9 @@
   },
   "scripts": {
     "start": "node app"
+  },
+  "devDependencies": {
+    "fs": "^0.0.1-security",
+    "lodash": "^4.17.4"
   }
 }

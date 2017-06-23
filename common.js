@@ -1,7 +1,47 @@
 var request = require('request');
 var async = require('async');
 var cheerio = require('cheerio');
+var _ = require('lodash');
 var Ut = {};
+
+/**
+获取搜狗微信首页的微信名称数组
+@param {function} callback 回调函数,callback(null,key_words)
+*/
+Ut.search_key_word = function (callback) {
+  var url = `http://weixin.sogou.com/`;
+  var options = {
+    url: url,
+    json:true,
+    method : 'GET',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' + 
+                    '(KHTML, like Gecko) Chrome/54.0.2840.87 Safari/537.36',
+      'X-Requested-With':'XMLHttpRequest'
+    }
+  };
+  request(options, function (err, response, html) {
+    if (err) return callback(err, null);
+    if (html.indexOf('<title>302 Found</title>') != -1) return callback(null, '302');
+    if (html.indexOf('您的访问过于频繁') != -1) return callback('-访问过于频繁')
+    // 微信名称数组
+    var weixin_names = [];
+    var $ = cheerio.load(html);
+    // 获取改标签下所有<a>的文本
+    $($("#type_tab .fieed-box a")).each(function () {
+      weixin_names.push($(this).text());
+    });
+    var weixin_names = _.remove(weixin_names, function(n) {
+      // var pattern = new RegExp("[热门|推荐|更多]");
+      var flag = (n !== '热门' && n !== '推荐' && n !== '更多')
+      return flag;
+    });
+    setTimeout(function () {
+      callback(null, weixin_names);
+    }, 1000 + Math.ceil(Math.random() * 500));
+    return;
+  })
+};
 
 /**
 根据微信号搜索公众号,并获取搜素到的第一个公众号链接
@@ -9,19 +49,44 @@ var Ut = {};
 @param {function} callback 回调函数,callback(null,url)
 */
 Ut.search_wechat = function (public_num, callback) {
-  var encode_public_num = encodeURIComponent(public_num);
-  var url = `http://weixin.sogou.com/weixin?type=1&query=${encode_public_num}&ie=utf8&_sug_=y&_sug_type_=1`;
-  request(url, function (err, response, html) {
-    if (err) return callback(err, null);
-    if (html.indexOf('<title>302 Found</title>') != -1) return callback(null, '302');
-    if (html.indexOf('您的访问过于频繁') != -1) return callback('-访问过于频繁')
-    var $ = cheerio.load(html);
-    //公众号页面的临时url
-    var wechat_num = $($("#sogou_vr_11002301_box_0 a")[0]).attr('href') || '';
+  console.log('search_wechat public_num:\n', public_num);
+  var wechat_urls = [];
+  async.forEachSeries(public_num, function (item, cb) {
+    var encode_public_num = encodeURIComponent(item);
+    var url = `http://weixin.sogou.com/weixin?type=1&query=${encode_public_num}&ie=utf8&_sug_=y&_sug_type_=1`;
+    var options = {
+      url: url,
+      json:true,
+      method : 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' + 
+                      '(KHTML, like Gecko) Chrome/54.0.2840.87 Safari/537.36',
+        'X-Requested-With':'XMLHttpRequest'
+      }
+    };
+    request(options, function (err, response, html) {
+      if (err) return callback(err, null);
+      if (html.indexOf('<title>302 Found</title>') != -1) return callback(null, '302');
+      if (html.indexOf('您的访问过于频繁') != -1) return callback('-访问过于频繁')
+      var $ = cheerio.load(html);
+      //公众号页面的临时url
+      var wechat_num = $($("#sogou_vr_11002301_box_0 a")[0]).attr('href') || '';
+      wechat_urls.push(wechat_num.replace(/amp;/g, ''));
+      cb();
+    })
+  }, function (err) {
+    if (err) {
+      res.json({
+        code: 500,
+        msg: err
+      });
+    }
+    console.log('wechat_urls: \n', wechat_urls);
     setTimeout(function () {
-      callback(null, wechat_num.replace(/amp;/g, ''));
+      callback(null, wechat_urls);
     }, 1000 + Math.ceil(Math.random() * 500));
-  })
+    return;
+  });
 };
 
 /**
@@ -29,68 +94,91 @@ Ut.search_wechat = function (public_num, callback) {
 @param {string} url 根据search_wechat方法得到的公众号链接
 @param {function} callback 回调函数,callback(null, article_titles, article_urls, article_pub_times)
 */
-Ut.look_wechat_by_url = function (url, callback) {
-  var task3 = [];
+Ut.look_wechat_by_url = function (urls, callback) {
+  console.log('look_wechat_by_url urls:\n', urls);
+  return;
+  // 微信号
+  var wechat_account = [];
+  var articles = {};
+  // 封面数组
+  var article_covers = [];
   //发布时间数组
   var article_pub_times = [];
   //标题列表数组
   var article_titles = [];
   //文章临时url列表数组
   var article_urls = [];
-  request(url, function (err, response, html) {
-    if (err) return callback(err, null, null);
-    var task4 = [];
-    if (html.indexOf('为了保护你的网络安全，请输入验证码') != -1) {
-      //验证验证码
-      task4.push(function (callback) {
-        Ut.solve_verifycode(html, url, function (err, result) {
-          if (err) return callback(err, null);
-          callback(null, result);
+  async.forEachSeries(urls, function (url, cb) {
+    request(url, function (err, response, html) {
+      if (err) return callback(err, null, null);
+      var task4 = [];
+      if (html.indexOf('为了保护你的网络安全，请输入验证码') != -1) {
+        //验证验证码
+        task4.push(function (callback) {
+          Ut.solve_verifycode(html, url, function (err, result) {
+            if (err) return callback(err, null);
+            callback(null, result);
+          })
+        });
+      } else {
+        task4.push(function (callback) {
+          callback(null, html);
+        });
+      }
+      task4.push(function (html, callback) {
+        //文章数组,页面上是没有的,在js中,通过正则截取出来
+        var msglist = html.match(/var msgList = ({.+}}]});?/);
+        if (!msglist) return callback(`-没有搜索到 ${publicNum} 的文章,只支持订阅号,服务号不支持!`);
+        msglist = msglist[1];
+        msglist = msglist.replace(/(&quot;)/g, '\\\"').replace(/(&nbsp;)/g, '');
+        msglist = JSON.parse(msglist);
+        if (msglist.list.length == 0) return callback(`-没有搜索到 ${publicNum} 的文章,只支持订阅号,服务号不支持!`);
+
+        //循环文章数组,重组数据
+        msglist.list.forEach(function (msg, index) {
+          //基本信息,主要是发布时间
+          var article_info = msg.comm_msg_info;
+          //发布时间
+          var article_pub_time = Ut.fmtDate(new Date(article_info.datetime * 1000)).split(" ")[0];
+          //第一篇文章
+          var article_first = msg.app_msg_ext_info;
+          article_pub_times.push(article_pub_time);
+          article_titles.push(article_first.title);
+          article_covers.push(article_first.cover);
+          article_urls.push('http://mp.weixin.qq.com' + article_first.content_url.replace(/(amp;)|(\\)/g, ''));
+          if (article_first.multi_app_msg_item_list.length > 0) {
+            //其他文章
+            var article_others = article_first.multi_app_msg_item_list;
+            article_others.forEach(function (article_other, index) {
+              article_pub_times.push(article_pub_time);
+              article_titles.push(article_other.title);
+              article_covers.push(article_other.cover);
+              article_urls.push('http://mp.weixin.qq.com' + article_other.content_url.replace(/(amp;)|(\\)/g, ''));
+            })
+          }
         })
-      });
-    } else {
-      task4.push(function (callback) {
-        callback(null, html);
+        callback(null);
+      })
+      async.waterfall(task4, function (err, result) {
+        if (err) return callback(err);
+        articles.article_titles = article_titles;
+        articles.article_urls = article_urls;
+        articles.article_pub_times = article_pub_times;
+        articles.article_covers = article_covers;
+        wechat_account.push(articles);
+        cb();
+      })
+    })
+  }, function(err) {
+    if (err) {
+      res.json({
+        code: 500,
+        msg: err
       });
     }
-    task4.push(function (html, callback) {
-      //文章数组,页面上是没有的,在js中,通过正则截取出来
-      var msglist = html.match(/var msgList = ({.+}}]});?/);
-      if (!msglist) return callback(`-没有搜索到 ${publicNum} 的文章,只支持订阅号,服务号不支持!`);
-      msglist = msglist[1];
-      msglist = msglist.replace(/(&quot;)/g, '\\\"').replace(/(&nbsp;)/g, '');
-      msglist = JSON.parse(msglist);
-      if (msglist.list.length == 0) return callback(`-没有搜索到 ${publicNum} 的文章,只支持订阅号,服务号不支持!`);
-
-      //循环文章数组,重组数据
-      msglist.list.forEach(function (msg, index) {
-        //基本信息,主要是发布时间
-        var article_info = msg.comm_msg_info;
-        //发布时间
-        var article_pub_time = Ut.fmtDate(new Date(article_info.datetime * 1000)).split(" ")[0];
-        //第一篇文章
-        var article_first = msg.app_msg_ext_info;
-        article_pub_times.push(article_pub_time);
-        article_titles.push(article_first.title);
-        article_urls.push('http://mp.weixin.qq.com' + article_first.content_url.replace(/(amp;)|(\\)/g, ''));
-        if (article_first.multi_app_msg_item_list.length > 0) {
-          //其他文章
-          var article_others = article_first.multi_app_msg_item_list;
-          article_others.forEach(function (article_other, index) {
-            article_pub_times.push(article_pub_time);
-            article_titles.push(article_other.title);
-            article_urls.push('http://mp.weixin.qq.com' + article_other.content_url.replace(/(amp;)|(\\)/g, ''));
-          })
-        }
-      })
-      callback(null);
-    })
-    async.waterfall(task4, function (err, result) {
-      if (err) return callback(err);
-      setTimeout(function () {
-        callback(null, article_titles, article_urls, article_pub_times);
-      }, 1000 + Math.ceil(Math.random() * 500));
-    })
+    setTimeout(function () {
+      callback(null, wechat_account);
+    }, 1000 + Math.ceil(Math.random() * 500));
   })
 };
 
@@ -99,91 +187,108 @@ Ut.look_wechat_by_url = function (url, callback) {
 @param {array} article_titles 所有标题数组
 @param {array} article_urls 所有文章临时url数组
 @param {array} article_pub_times 所有发布时间数组
+@param {array} article_covers 所有发布文章的封面图
 @param {function} callback 回调函数,callback(null, articles);
 */
-Ut.get_info_by_url = function (article_titles, article_urls, article_pub_times, callback) {
-  var task1 = [];
-  var articles = [];
-  if (article_urls.length > 0) {
-    article_urls.forEach(function (article_url, index) {
-      //此if可以限制获取文章的数量.为了测试,限制抓取5篇
-      if (index < 5) {
-        task1.push(function (callback) {
-          var article_object = {
-            title: '', url: '', read_num: '', like_num: '',
-            release_time: '', author: '', wechat_number: ''
-          }
-          var task2 = [];
-          //发布日期,作者,公众号,url
-          task2.push(function (callback) {
-            request(article_url, function (err, response, html) {
+Ut.get_info_by_url = function (wechat_account, callback) {
+  console.log('get_info_by_url wechat_account:\n',wechat_account);
+  // 微信号
+  var wechat_account = [];
+  var articles = {};
+  async.forEachSeries(wechat_account, function (item, cb) {
+    var task1 = [];
+    var articles = [];
+    if (item.article_urls.length > 0) {
+      item.article_urls.forEach(function (article_url, index) {
+        //此if可以限制获取文章的数量.为了测试,限制抓取5篇
+        if (index < 10) {
+          task1.push(function (callback) {
+            var article_object = {
+              title: '', url: '', read_num: '', like_num: '',
+              release_time: '', author: '', wechat_number: '', cover: ''
+            }
+            var task2 = [];
+            //发布日期,作者,公众号,url
+            task2.push(function (callback) {
+              request(article_url, function (err, response, html) {
+                if (err) return callback(err, null);
+                var $ = cheerio.load(html);
+                //发布日期
+                var release_time = $("#post-date").text();
+                //作者
+                var author = $($(".rich_media_meta_list em")[1]).text();
+                //公众号
+                var wechat_number = $("#post-user").text();
+                article_object.release_time = release_time;
+                article_object.author = author;
+                article_object.wechat_number = wechat_number;
+                article_object.title = item.article_titles[index].replace(/amp;/g, '').replace(/&quot;/g, '"');
+                article_object.url = item.article_urls[index];
+                article_object.cover = item.article_covers[index];
+                callback(null, article_url);
+              })
+            })
+            //阅读量和点赞量,ajax获取
+            task2.push(function (article_url, callback) {
+              var ajax_url = article_url.replace(/\/s\?/, '/mp/getcomment?');
+              var options = {
+                url: ajax_url,
+                json: true,
+                method: 'GET'
+              };
+              Ut.request_json(options, function (err, data) {
+                if (err) {
+                  console.log(err)
+                  article_object.read_num = 0;
+                  article_object.like_num = 0;
+                  return callback(null, article_url);
+                }
+                article_object.read_num = data.read_num;
+                article_object.like_num = data.like_num;
+                callback(null, article_url);
+              })
+            })
+            task2.push(function (article_url, callback) {
+              var suffix_url = `&devicetype=Windows-QQBrowser&version=61030004&pass_ticket=qMx7ntinAtmqhVn+C23mCuwc9ZRyUp20kIusGgbFLi0=&uin=MTc1MDA1NjU1&ascene=1`;
+              var get_forever_url = article_url + suffix_url;
+              var options = {
+                url: get_forever_url,
+                headers: {
+                  'User-Agent': 'request'
+                }
+              };
+              request(options, function (error, response, body) {
+                if (!error && response.statusCode == 200) {
+                  article_object.url = response.request.href;
+                }
+                callback(null);
+              });
+            })
+            async.waterfall(task2, function (err, result) {
               if (err) return callback(err, null);
-              var $ = cheerio.load(html);
-              //发布日期
-              var release_time = $("#post-date").text();
-              //作者
-              var author = $($(".rich_media_meta_list em")[1]).text();
-              //公众号
-              var wechat_number = $("#post-user").text();
-              article_object.release_time = release_time;
-              article_object.author = author;
-              article_object.wechat_number = wechat_number;
-              article_object.title = article_titles[index].replace(/amp;/g, '').replace(/&quot;/g, '"');
-              article_object.url = article_urls[index];
-              callback(null, article_url);
+              articles.push(article_object);
+              setTimeout(function () {
+                callback(null);
+              }, 500 + Math.ceil(Math.random() * 500));
             })
-          })
-          //阅读量和点赞量,ajax获取
-          task2.push(function (article_url, callback) {
-            var ajax_url = article_url.replace(/\/s\?/, '/mp/getcomment?');
-            var options = {
-              url: ajax_url,
-              json: true,
-              method: 'GET'
-            };
-            Ut.request_json(options, function (err, data) {
-              if (err) {
-                console.log(err)
-                article_object.read_num = 0;
-                article_object.like_num = 0;
-                return callback(null, article_url);
-              }
-              article_object.read_num = data.read_num;
-              article_object.like_num = data.like_num;
-              callback(null, article_url);
-            })
-          })
-          task2.push(function (article_url, callback) {
-            var suffix_url = `&devicetype=Windows-QQBrowser&version=61030004&pass_ticket=qMx7ntinAtmqhVn+C23mCuwc9ZRyUp20kIusGgbFLi0=&uin=MTc1MDA1NjU1&ascene=1`;
-            var get_forever_url = article_url + suffix_url;
-            var options = {
-              url: get_forever_url,
-              headers: {
-                'User-Agent': 'request'
-              }
-            };
-            request(options, function (error, response, body) {
-              if (!error && response.statusCode == 200) {
-                article_object.url = response.request.href;
-              }
-              callback(null);
-            });
-          })
-          async.waterfall(task2, function (err, result) {
-            if (err) return callback(err, null);
-            articles.push(article_object);
-            setTimeout(function () {
-              callback(null);
-            }, 500 + Math.ceil(Math.random() * 500));
-          })
 
-        })
-      }
+          })
+        }
+      })
+    }
+    async.waterfall(task1, function (err, result) {
+      if (err) return callback(err, null);
+      callback(null, articles);
     })
-  }
-  async.waterfall(task1, function (err, result) {
-    if (err) return callback(err, null);
-    callback(null, articles);
+  }, function (err) {
+    if (err) {
+      res.json({
+        code: 500,
+        msg: err
+      });
+    }
+    console.log('articles:', articles);
+    return;
   })
 };
 
